@@ -39,10 +39,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-def get_service() -> QuotaService:
-    if not hasattr(app.state, "db_pool") or app.state.db_pool is None:
+def get_service(request: Request) -> QuotaService:
+    if not hasattr(request.app.state, "db_pool") or request.app.state.db_pool is None:
         raise DatabaseUnavailableError("Database connection pool is not available")
-    return QuotaService(app.state.db_pool)
+    return QuotaService(request.app.state.db_pool)
 
 # Global Exception Handlers for Database Fail-Closed and Validation
 @app.exception_handler(DatabaseUnavailableError)
@@ -62,15 +62,15 @@ async def value_error_handler(request: Request, exc: ValueError):
 # --- Healthcheck Endpoint ---
 
 @app.get("/health", tags=["Monitoring"])
-async def health_check():
+async def health_check(request: Request):
     """Checks PostgreSQL connectivity. Fails closed with 503 if unavailable."""
-    if not hasattr(app.state, "db_pool") or app.state.db_pool is None:
+    if not hasattr(request.app.state, "db_pool") or request.app.state.db_pool is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Database pool not initialized",
         )
     try:
-        async with app.state.db_pool.acquire() as conn:
+        async with request.app.state.db_pool.acquire() as conn:
             val = await conn.fetchval("SELECT 1;")
             if val != 1:
                 raise Exception("Invalid database response")
@@ -89,14 +89,14 @@ async def health_check():
     status_code=status.HTTP_200_OK,
     tags=["Quota Operations"],
 )
-async def consume_quota(req: ConsumeRequest):
+async def consume_quota(req: ConsumeRequest, request: Request):
     """
     Atomically consumes quota units for an organization and feature.
     - All-or-nothing units: rejects with 429 if insufficient.
     - Idempotent: same key and payload returns previous response without charging again.
     - Conflict: same key with different payload returns 409 Conflict.
     """
-    svc = get_service()
+    svc = get_service(request)
     result = await svc.consume(
         org_id=req.org_id,
         feature=req.feature,
@@ -144,9 +144,9 @@ async def consume_quota(req: ConsumeRequest):
     response_model=FinalizeResponse,
     tags=["Quota Operations"],
 )
-async def finalize_quota(req: FinalizeRequest):
+async def finalize_quota(req: FinalizeRequest, request: Request):
     """Marks a CHARGED operation as FINALIZED upon downstream completion."""
-    svc = get_service()
+    svc = get_service(request)
     result = await svc.finalize(req.operation_id)
     if result.status_code == 200:
         return FinalizeResponse(
@@ -165,12 +165,12 @@ async def finalize_quota(req: FinalizeRequest):
     response_model=RefundResponse,
     tags=["Quota Operations"],
 )
-async def refund_quota(req: RefundRequest):
+async def refund_quota(req: RefundRequest, request: Request):
     """
     Refunds units for a CHARGED operation upon confirmed downstream failure.
     Deducts units from the original billing period recorded on the operation.
     """
-    svc = get_service()
+    svc = get_service(request)
     result = await svc.refund(req.operation_id, req.reason)
     if result.status_code == 200:
         return RefundResponse(
@@ -192,6 +192,7 @@ async def refund_quota(req: RefundRequest):
     tags=["Quota Usage"],
 )
 async def get_quota_usage(
+    request: Request,
     org_id: str = Query(..., description="Organization identifier"),
     feature: str = Query(..., description="Feature identifier"),
 ):
@@ -199,7 +200,7 @@ async def get_quota_usage(
     Returns total usage, limit, remaining quota, and next reset time for an organization.
     Returns 200 OK with used = 0 if no usage record exists yet for current period.
     """
-    svc = get_service()
+    svc = get_service(request)
     try:
         return await svc.get_usage(org_id, feature)
     except ValueError as e:
@@ -208,16 +209,16 @@ async def get_quota_usage(
 # --- Admin Configuration Endpoints ---
 
 @app.post("/v1/admin/quota/limits/default", tags=["Admin"])
-async def set_default_limit(req: DefaultLimitRequest):
+async def set_default_limit(req: DefaultLimitRequest, request: Request):
     """Sets feature-level monthly quota default."""
-    svc = get_service()
+    svc = get_service(request)
     await svc.set_default_limit(req.feature, req.monthly_limit)
     return {"status": "ok", "feature": req.feature, "monthly_limit": req.monthly_limit}
 
 @app.post("/v1/admin/quota/limits/override", tags=["Admin"])
-async def set_override_limit(req: OverrideLimitRequest):
+async def set_override_limit(req: OverrideLimitRequest, request: Request):
     """Sets organization-specific quota override for a feature."""
-    svc = get_service()
+    svc = get_service(request)
     await svc.set_override_limit(req.org_id, req.feature, req.monthly_limit)
     return {
         "status": "ok",
@@ -227,12 +228,12 @@ async def set_override_limit(req: OverrideLimitRequest):
     }
 
 @app.patch("/v1/admin/quota/limits/current-period", tags=["Admin"])
-async def update_current_period_limit(req: UpdateCurrentPeriodLimitRequest):
+async def update_current_period_limit(req: UpdateCurrentPeriodLimitRequest, request: Request):
     """
     Updates the current period's limit for an organization and feature.
     Rejects any limit below the already consumed usage.
     """
-    svc = get_service()
+    svc = get_service(request)
     try:
         return await svc.update_current_period_limit(
             req.org_id, req.feature, req.new_limit

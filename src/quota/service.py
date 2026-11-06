@@ -23,8 +23,20 @@ class QuotaService:
 
     def _wrap_db_errors(self, exc: Exception) -> Exception:
         """Translates connection or fatal database errors to DatabaseUnavailableError."""
-        if isinstance(exc, (asyncpg.PostgresConnectionError, asyncpg.CannotConnectNowError, OSError, ConnectionRefusedError)):
-            return DatabaseUnavailableError("Database connection failed. Service is failing closed to prevent over-consumption.")
+        if isinstance(
+            exc,
+            (
+                asyncpg.PostgresConnectionError,
+                asyncpg.CannotConnectNowError,
+                asyncpg.InterfaceError,
+                asyncpg.InternalServerError,
+                OSError,
+                ConnectionRefusedError,
+            ),
+        ):
+            return DatabaseUnavailableError(
+                f"Database connection failed ({type(exc).__name__}). Service is failing closed to prevent over-consumption."
+            )
         return exc
 
     async def consume(
