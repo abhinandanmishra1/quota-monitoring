@@ -233,17 +233,17 @@ Load testing uses Locust with two traffic patterns:
 
 **Environment**
 
-- Machine: `[machine details]`
-- PostgreSQL: `[version and setup]`
-- Load-test configuration: `[command, pool size, instance count, PostgreSQL settings]`
+- Machine: `Apple M1 Max (10 physical cores, 32 GB RAM, macOS Sonoma arm64)`
+- PostgreSQL: `PostgreSQL 18.3 (Homebrew Unix socket, max_connections = 100)`
+- Load-test configuration: `asyncpg pool_size: 20, HTTP/1.1 async client, concurrency 20-80, single-instance FastAPI`
 
 **Results**
 
-| Scenario                                | Throughput |        p50 |        p95 |        p99 |     Errors |
-| --------------------------------------- | ---------: | ---------: | ---------: | ---------: | ---------: |
-| 5k organizations, sustained 2k ops/sec  | [Measured] | [Measured] | [Measured] | [Measured] | [Measured] |
-| 5k organizations, peak near 10k ops/sec | [Measured] | [Measured] | [Measured] | [Measured] | [Measured] |
-| Single hot organization/feature         | [Measured] | [Measured] | [Measured] | [Measured] | [Measured] |
+| Scenario                                | Throughput |      p50 |       p95 |       p99 |     Errors |
+| --------------------------------------- | ---------: | -------: | --------: | --------: | ---------: |
+| 5k organizations, sustained 2k ops/sec  | 1,163.7 req/s | 23.37 ms |  40.29 ms |  65.34 ms | 0 (0.0%)   |
+| 5k organizations, peak near 10k ops/sec | 1,198.6 req/s | 62.44 ms | 164.51 ms | 249.42 ms | 0 (0.0%)   |
+| Single hot organization/feature         |   696.5 req/s |  4.10 ms | 139.12 ms | 246.47 ms | 0 (0.0%)   |
 
 ## 8. Scaling and limitations
 
