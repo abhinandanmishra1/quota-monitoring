@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: quota-postgres
+    environment:
+      POSTGRES_DB: quota_metering
+      POSTGRES_USER: quota_user
+      POSTGRES_PASSWORD: quota_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quota_user -d quota_metering"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+
+  quota-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: quota-service
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://quota_user:quota_password@postgres:5432/quota_metering
+      DB_POOL_MIN: 5
+      DB_POOL_MAX: 20
+      DB_TIMEOUT: 5.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
+volumes:
+  pgdata:
