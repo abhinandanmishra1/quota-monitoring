@@ -36,6 +36,8 @@ docker compose up --build -d
 
 The service is exposed at `http://localhost:8000`.
 
+If a local PostgreSQL already uses port 5432, change the `postgres` port mapping in `docker-compose.yml` (for example `"15432:5432"`); the service itself reaches the database over the Compose network and is unaffected.
+
 To view logs:
 ```bash
 docker compose logs -f quota-service
@@ -90,7 +92,7 @@ pytest tests/ -v
 - `tests/test_finalize_refund_race.py`: Verifies race condition between finalize and refund (only one state transition succeeds).
 - `tests/test_admin_limits_defaults_overrides_and_period_update.py`: Verifies feature defaults, org overrides, and rejecting limit reductions below current usage.
 - `tests/test_database_outage_returns_503.py`: Verifies 503 fail-closed behavior when database is unreachable.
-- `tests/test_operation_overhead_under_10ms.py`: Verifies that quota enforcement latency overhead is `< 10ms` (measured ~3.7ms p50).
+- `tests/test_operation_overhead_under_10ms.py`: Verifies that quota enforcement latency overhead is `< 10ms` (measured ~2ms p50).
 
 ---
 
@@ -107,13 +109,15 @@ Or run Locust interactively:
 PYTHONPATH=src locust -f load_tests/locustfile.py --host http://localhost:8000
 ```
 
-### Measured Benchmark Results (Apple M1 Max, PostgreSQL 18.3):
+### Measured Benchmark Results (Apple M1 Max, local PostgreSQL, 4 service instances):
 
 | Scenario | Throughput | p50 | p95 | p99 | Errors |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| 5k organizations, sustained workload | 1,163.7 req/s | 23.37 ms | 40.29 ms | 65.34 ms | 0 (0.0%) |
-| 5k organizations, peak burst | 1,198.6 req/s | 62.44 ms | 164.51 ms | 249.42 ms | 0 (0.0%) |
-| Single hot organization/feature | 696.5 req/s | 4.10 ms | 139.12 ms | 246.47 ms | 0 (0.0%) |
+| 5k organizations, sustained | 6,505 req/s | 6 ms | 11 ms | 19 ms | 0 |
+| 5k organizations, peak burst | 7,284 req/s | 16 ms | 31 ms | 45 ms | 0 |
+| Single hot organization/feature | 2,758 req/s | 7 ms | 36 ms | 62 ms | 0 |
+
+The 10,000 req/s peak target is not met on this single-machine setup. See DESIGN.md section 7 for analysis.
 
 ---
 

@@ -32,7 +32,9 @@ def multi_instances():
             env={
                 "PATH": subprocess.os.environ["PATH"],
                 "PYTHONPATH": "src",
-                "DATABASE_URL": "postgresql://localhost/quota_metering",
+                "DATABASE_URL": subprocess.os.environ.get(
+                    "DATABASE_URL", "postgresql://localhost/quota_metering"
+                ),
                 "DB_POOL_MIN": "5",
                 "DB_POOL_MAX": "20",
             },
