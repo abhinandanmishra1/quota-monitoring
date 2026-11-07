@@ -1,7 +1,13 @@
+# Tests admin configuration (DESIGN.md 4.4, Requirement 6).
+# Case: test_admin_config_defaults_overrides_and_current_period_update
+#   - consuming an unconfigured feature returns 404
+#   - feature default vs organization override limits
+#   - lowering the current-period limit below consumed usage is rejected (400)
+#   - raising the limit above usage succeeds
 import pytest
 from httpx import AsyncClient, ASGITransport
-from quota.api import app
-from quota.database import init_db
+from quota.main import app
+from quota.core.database import init_db
 
 @pytest.mark.asyncio
 async def test_admin_config_defaults_overrides_and_current_period_update(db_pool):

@@ -7,3 +7,6 @@ __pycache__/
 dist/
 build/
 .DS_Store
+
+# Local-only notes (not pushed)
+WALKTHROUGH.md

@@ -1,10 +1,14 @@
+# Tests billing-period isolation for refunds (DESIGN.md 4.4, 5).
+# Case: test_cross_month_refund_isolation
+#   - an operation charged in an earlier period and refunded now credits the original
+#     period; the current period's usage is unchanged
 import pytest
 import uuid
 from httpx import AsyncClient, ASGITransport
-from quota.api import app
-from quota.database import init_db
-from quota.service import QuotaService
-from quota.period import get_next_reset_time
+from quota.main import app
+from quota.core.database import init_db
+from quota.services.quota_service import QuotaService
+from quota.core.period import get_next_reset_time
 
 @pytest.mark.asyncio
 async def test_cross_month_refund_isolation(db_pool):

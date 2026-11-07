@@ -1,7 +1,12 @@
+# Tests QuotaRepository directly against PostgreSQL (DESIGN.md 4.1-4.3).
+# Cases:
+#   - test_atomic_consume_and_insufficient_quota: all-or-nothing deduction, nothing taken on 429
+#   - test_idempotency_same_key_same_payload_and_different_payload: replay vs 409 at repository level
+#   - test_finalize_and_refund_lifecycle: CHARGED to FINALIZED / REFUNDED transitions and usage credit
 import pytest
 import uuid
-from quota.repository import QuotaRepository
-from quota.period import get_current_period, get_next_reset_time
+from quota.repository.quota_repository import QuotaRepository
+from quota.core.period import get_current_period, get_next_reset_time
 
 @pytest.mark.asyncio
 async def test_atomic_consume_and_insufficient_quota(db_pool):

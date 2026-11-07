@@ -1,2 +1,1 @@
-"""Per-Customer Quota Metering Service package."""
-__version__ = "0.1.0"
+"""Per-customer quota metering service (see DESIGN.md)."""

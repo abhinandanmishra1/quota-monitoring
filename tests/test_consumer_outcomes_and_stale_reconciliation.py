@@ -1,10 +1,16 @@
+# Tests the sample consumer and reconciliation (DESIGN.md 3, 4.3).
+# Case: test_sample_consumer_and_reconciliation
+#   - downstream success leads to consume then finalize
+#   - confirmed downstream failure leads to consume then refund
+#   - downstream timeout leaves the operation CHARGED (no refund)
+#   - reconciliation reports the stale CHARGED operation
 import pytest
 import asyncio
 from httpx import AsyncClient, ASGITransport
-from quota.api import app
-from quota.database import init_db
-from quota.consumer import SampleDownstreamConsumer
-from quota.reconciliation import find_stale_charged_operations
+from quota.main import app
+from quota.core.database import init_db
+from quota.client.consumer import SampleDownstreamConsumer
+from quota.reconciliation.worker import find_stale_charged_operations
 
 @pytest.mark.asyncio
 async def test_sample_consumer_and_reconciliation(db_pool):

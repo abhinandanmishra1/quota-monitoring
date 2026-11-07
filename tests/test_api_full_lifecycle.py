@@ -1,7 +1,12 @@
+# Tests the HTTP API end to end (DESIGN.md 4.3, 4.4).
+# Case: test_api_full_lifecycle
+#   - /health, set default limit, usage with no row yet (used=0, 200)
+#   - consume, same-key replay (no second charge), same key different units (409)
+#   - over-limit consume (429), finalize, consume then refund
 import pytest
 from httpx import AsyncClient, ASGITransport
-from quota.api import app
-from quota.database import init_db
+from quota.main import app
+from quota.core.database import init_db
 
 @pytest.mark.asyncio
 async def test_api_full_lifecycle(db_pool):

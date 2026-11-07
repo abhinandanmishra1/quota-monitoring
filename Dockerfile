@@ -20,4 +20,4 @@ COPY pyproject.toml .
 
 EXPOSE 8000
 
-CMD ["uvicorn", "quota.api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "quota.main:app", "--host", "0.0.0.0", "--port", "8000"]

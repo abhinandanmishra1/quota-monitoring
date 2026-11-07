@@ -1,8 +1,12 @@
+# Tests fail-closed behavior (DESIGN.md 6).
+# Case: test_database_outage_fails_closed_with_503
+#   - with no database pool, /health and /v1/quota/consume return 503
+#     instead of using any stale balance
 import pytest
 from httpx import AsyncClient, ASGITransport
 from fastapi import FastAPI
-from quota.api import app
-from quota.service import DatabaseUnavailableError
+from quota.main import app
+from quota.core.exceptions import DatabaseUnavailableError
 
 @pytest.mark.asyncio
 async def test_database_outage_fails_closed_with_503():
@@ -14,7 +18,9 @@ async def test_database_outage_fails_closed_with_503():
     # Create an app instance with a non-existent / broken database pool
     bad_app = FastAPI()
     # Import and register the same exception handlers and routes
-    from quota.api import consume_quota, health_check, db_unavailable_handler
+    from quota.api.quota import consume_quota
+    from quota.api.health import health_check
+    from quota.main import db_unavailable_handler
     bad_app.add_exception_handler(DatabaseUnavailableError, db_unavailable_handler)
     bad_app.add_api_route("/v1/quota/consume", consume_quota, methods=["POST"])
     bad_app.add_api_route("/health", health_check, methods=["GET"])

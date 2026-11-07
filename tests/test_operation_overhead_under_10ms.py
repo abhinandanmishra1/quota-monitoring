@@ -1,8 +1,12 @@
+# Tests the latency target (NFR 3: under 10ms per operation).
+# Case: test_operation_overhead_less_than_10ms
+#   - sequential consume requests through the app (in-process ASGI, real PostgreSQL)
+#   - asserts p50 latency is under 10ms (p95 is only printed); excludes network and Uvicorn
 import time
 import pytest
 from httpx import AsyncClient, ASGITransport
-from quota.api import app
-from quota.database import init_db
+from quota.main import app
+from quota.core.database import init_db
 
 @pytest.mark.asyncio
 async def test_operation_overhead_less_than_10ms(db_pool):

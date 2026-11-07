@@ -184,6 +184,7 @@ The data model uses four main tables:
 | Downstream timeout or ambiguous response | Keep charge; do not refund until outcome is known.         |
 | Same key and payload retried             | Replay stored result; do not charge again.                 |
 | Same key with different payload          | Return `409 Conflict`.                                     |
+| Same key retried after a refund          | Return `409 Conflict`; client must use a new key.          |
 
 **Concurrency and consistency**
 
@@ -202,48 +203,87 @@ Consume and refund update the operation and usage records in one transaction. Bo
 
 Tests use a real PostgreSQL instance because mocked or in-memory storage cannot demonstrate actual database row-locking and transaction behavior.
 
-**Concurrency testing**
+**Concurrency testing across multiple instances**
 
-The key test starts 100 concurrent requests of 10 units against a quota of 500, distributed across multiple service instances.
+The mandatory concurrency test starts 100 concurrent requests of 10 units against a configured quota of 500, distributed round-robin across 4 running FastAPI service instances (ports 8001, 8002, 8003, and 8004) pointing to the same shared PostgreSQL database.
 
-Expected result:
+- **Exact command:**
+  ```bash
+  cd quota-metering && .venv/bin/pytest -k across_4_instances -v -s
+  ```
+- **Test execution evidence:**
+  - 4 independent Uvicorn processes launched on ports 8001–8004.
+  - Organization `multi_inst_org` and feature `multi_inst_feat` configured with limit 500.
+  - 100 concurrent requests of 10 units dispatched simultaneously (25 requests per instance) via `asyncio.gather`.
+  - Exactly 50 requests succeeded (`HTTP 200` with status `CHARGED`).
+  - Exactly 50 requests were rejected (`HTTP 429` with message `Quota limit exceeded`).
+  - Direct database query confirmed final usage was exactly 500 (`used = 500, quota_limit = 500`).
+  - Zero over-consumption occurred.
 
-- Exactly 50 requests succeed.
-- Exactly 50 requests are rejected.
-- Final usage is exactly 500.
-- Usage never exceeds the configured quota.
+**Quota Operation Overhead (<10ms target)**
 
-This verifies that PostgreSQL correctly handles concurrent updates and prevents over-consumption across service instances.
+Overhead was measured separately for the database function and the HTTP layer:
+
+1. **Direct PostgreSQL overhead** (1,000 sequential calls to `fn_quota_consume`, from the benchmark run):
+   - **p50:** 0.31 ms, **p95:** 0.62 ms
+   - **Status:** PASS (<10ms target met)
+
+2. **HTTP handler overhead** (sequential requests through the FastAPI app using httpx's in-process ASGI transport, real PostgreSQL):
+   - **p50:** 2.39 ms, **p95:** 4.32 ms
+   - This excludes the network hop and Uvicorn, so it measures routing, validation and the database call, not client-observed latency.
+   - **Status:** PASS (<10ms target met)
 
 **Other test cases**
 
 - Mixed request sizes and concurrent first-time usage creation.
 - Duplicate requests and idempotency key reuse with different payloads.
+- 20 simultaneous retries of one new key: all replay one operation, one charge.
+- Replaying a refunded key returns `409` with an explicit message.
 - Retries and refunds across month boundaries.
-- Concurrent finalize/refund requests.
-- Missing quota configuration.
-- Admin quota limit updates.
+- Concurrent finalize/refund requests race conditions.
+- Missing quota configuration handling and admin limit updates rejecting limits below consumed usage, including under concurrent consumes.
+- Cleanup job deletes only finished operations older than the retention window and never `CHARGED` ones.
+- Database outage simulation verifying 503 fail-closed behavior.
 
-**Load testing**
+**Load testing configuration & reproducibility**
 
-Load testing uses Locust with two traffic patterns:
+Load testing used Locust with `FastHttpUser`, with traffic spread round-robin across 4 independent FastAPI/Uvicorn instances sharing one PostgreSQL database:
 
-- Traffic distributed across many organizations.
-- Traffic concentrated on a single organization and feature to identify hot-row contention.
+- **Reproduction command:**
+  ```bash
+  PYTHONPATH=src .venv/bin/python3 load_tests/run_benchmarks.py
+  ```
+- **Environment:**
+  - Machine: Apple M1 Max (10 physical cores), macOS arm64
+  - PostgreSQL: local instance over a Unix socket
+  - Service setup: 4 Uvicorn instances on ports 8001-8004, asyncpg pool min=3, max=15 per instance
+  - Load generator: Locust 2.47.0, headless, on the same machine
+  - Setup: `/health` polling on every port, then limit seeding (`100,000,000` units) before traffic
+- **Scenarios (15s each):**
+  - *Sustained:* 60 users, spawn rate 20/s, spread over 5k organizations.
+  - *Peak:* 150 users, spawn rate 50/s, spread over 5k organizations.
+  - *Hot org:* 40 users, spawn rate 20/s, one organization and feature.
 
-**Environment**
+**Results (single run, achieved vs target)**
 
-- Machine: `Apple M1 Max (10 physical cores, 32 GB RAM, macOS Sonoma arm64)`
-- PostgreSQL: `PostgreSQL 18.3 (Homebrew Unix socket, max_connections = 100)`
-- Load-test configuration: `asyncpg pool_size: 20, HTTP/1.1 async client, concurrency 20-80, single-instance FastAPI`
+| Scenario | Target | Achieved Throughput | p50 | p95 | p99 | Errors | Outcome |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| 5k organizations, sustained | 2,000 req/s | **6,505.0 req/s** | 6 ms | 11 ms | 19 ms | 0 | **TARGET MET (3.3x)** |
+| 5k organizations, peak | 10,000 req/s | **7,284.0 req/s** | 16 ms | 31 ms | 45 ms | 0 | **TARGET NOT MET (72.8%)** |
+| Single hot organization/feature | Contention analysis | **2,758.3 req/s** | 7 ms | 36 ms | 62 ms | 0 | **Serialized (0 errors)** |
 
-**Results**
+Numbers vary between runs because the load generator, services and database share one machine.
 
-| Scenario                                | Throughput |      p50 |       p95 |       p99 |     Errors |
-| --------------------------------------- | ---------: | -------: | --------: | --------: | ---------: |
-| 5k organizations, sustained 2k ops/sec  | 1,163.7 req/s | 23.37 ms |  40.29 ms |  65.34 ms | 0 (0.0%)   |
-| 5k organizations, peak near 10k ops/sec | 1,198.6 req/s | 62.44 ms | 164.51 ms | 249.42 ms | 0 (0.0%)   |
-| Single hot organization/feature         |   696.5 req/s |  4.10 ms | 139.12 ms | 246.47 ms | 0 (0.0%)   |
+**Analysis of gaps and suspected bottlenecks**
+
+1. **Peak throughput (7,284 req/s vs 10,000 req/s, not met):**
+   - Running 8 instances instead of 4 did not help: throughput fell to about 5,700 req/s in both the sustained and peak scenarios (single run, 80/250/50 users, pool 2-10). More server processes only added contention, which points to a saturated machine rather than a quota-logic limit.
+   - *Suspected bottleneck:* the load generator, the Uvicorn processes and PostgreSQL compete for the same 10 cores. This is not verified; no profiling was done.
+   - *Production remediation:* run load generation from separate machines, put PgBouncer in front of PostgreSQL, and re-measure on dedicated hardware.
+
+2. **Hot-organization ceiling:**
+   - All requests for one organization and feature update a single row, so they serialize in the database. Doing the deduction inside `fn_quota_consume` keeps the lock short (one round trip).
+   - Going well beyond this on one organization would need quota block leasing (Section 8), which trades strict accuracy for local allocation.
 
 ## 8. Scaling and limitations
 
@@ -259,7 +299,8 @@ The main bottlenecks are likely to be database connection-pool waits and content
 **Limitations and trade-offs**
 
 - The service fails closed during PostgreSQL outages. This protects quota correctness but makes enforcement dependent on database availability.
-- Idempotency is guaranteed only within the configured 24-hour retention window. Retries after expiration may be treated as new operations.
+- Idempotency is guaranteed only within the 24-hour retention window. A cleanup job (`purge_expired_operations`) deletes `FINALIZED`, `REFUNDED` and `REJECTED` operations older than that; retries after expiry may be treated as new operations. `CHARGED` operations are never purged.
+- Organizations and features have no tables of their own. The calling product API authenticates the organization and is the source of truth for `org_id`, so the quota service does not validate it. A feature exists once it has a row in `quota_config_default` (or an override); consuming an unconfigured feature returns `404`. This avoids a second source of truth and an extra lookup on the hot path.
 - Downstream reconciliation depends on downstream support for operation-status lookup or idempotent execution. Without either, ambiguous operations cannot be resolved automatically.
 
 ## 9. AI assistance

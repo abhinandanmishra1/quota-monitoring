@@ -1,5 +1,12 @@
+# Tests QuotaService validation and admin logic (DESIGN.md 4.4, 6).
+# Cases:
+#   - test_service_validations_and_unconfigured_feature: units must be > 0, key must be
+#     non-empty, unconfigured feature returns 404
+#   - test_service_admin_limit_updates_and_overrides: default vs override limits and
+#     current-period limit updates (rejected below usage)
 import pytest
-from quota.service import QuotaService, DatabaseUnavailableError
+from quota.services.quota_service import QuotaService
+from quota.core.exceptions import DatabaseUnavailableError
 
 @pytest.mark.asyncio
 async def test_service_validations_and_unconfigured_feature(db_pool):

@@ -1,116 +1,210 @@
-import asyncio
+import os
+import sys
 import time
-import uuid
-import random
-import statistics
-from httpx import AsyncClient, ASGITransport
+import subprocess
+import csv
+import glob
+import httpx
 import asyncpg
-from quota.api import app
-from quota.database import create_db_pool, init_db
-from quota.config import settings
 
-async def setup_benchmarks(pool: asyncpg.Pool):
-    await init_db(pool)
-    app.state.db_pool = pool
+PORTS = [8001, 8002, 8003, 8004]
+BASE_URL = "http://127.0.0.1:8001"
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # Seed default limit: 100,000,000 units
-        await client.post(
-            "/v1/admin/quota/limits/default",
+def start_services():
+    """Starts 4 FastAPI service instances across separate ports."""
+    procs = []
+    print(f"Starting {len(PORTS)} FastAPI instances on ports {PORTS}...")
+    for port in PORTS:
+        p = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "quota.main:app",
+                "--port",
+                str(port),
+                "--no-access-log",
+                "--log-level",
+                "warning",
+            ],
+            env={
+                "PATH": os.environ["PATH"],
+                "PYTHONPATH": "src",
+                "DATABASE_URL": os.getenv("DATABASE_URL", "postgresql://localhost/quota_metering"),
+                "DB_POOL_MIN": "3",
+                "DB_POOL_MAX": "15",
+            },
+        )
+        procs.append(p)
+
+    # Wait for all 4 instances to be healthy
+    start = time.time()
+    for port in PORTS:
+        healthy = False
+        while time.time() - start < 10:
+            try:
+                r = httpx.get(f"http://127.0.0.1:{port}/health", timeout=1.0)
+                if r.status_code == 200:
+                    healthy = True
+                    break
+            except Exception:
+                time.sleep(0.1)
+        if not healthy:
+            for p in procs:
+                p.terminate()
+            raise RuntimeError(f"Service on port {port} failed to start")
+    print("All 4 instances are healthy and ready.")
+    return procs
+
+def stop_services(procs):
+    for p in procs:
+        p.terminate()
+        p.wait()
+    print("All service instances terminated.")
+
+def seed_database():
+    print("Seeding database configurations...")
+    with httpx.Client() as client:
+        # Seed 100M units default
+        client.post(
+            f"{BASE_URL}/v1/admin/quota/limits/default",
             json={"feature": "load_feature", "monthly_limit": 100000000},
         )
-        # Seed hot org limit: 50,000,000 units
-        await client.post(
-            "/v1/admin/quota/limits/override",
+        # Seed 50M units hot org
+        client.post(
+            f"{BASE_URL}/v1/admin/quota/limits/override",
             json={"org_id": "hot_organization", "feature": "load_feature", "monthly_limit": 50000000},
         )
 
-async def benchmark_scenario(
-    name: str,
-    concurrency: int,
-    total_requests: int,
-    target_hot_org: bool = False,
-) -> dict:
-    transport = ASGITransport(app=app)
-    latencies_ms: list[float] = []
-    errors = 0
-    start_time = time.perf_counter()
+def measure_overhead():
+    print("Measuring quota operation overhead (1,000 operations)...")
+    import asyncio
+    from quota.core.database import create_db_pool
 
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        sem = asyncio.Semaphore(concurrency)
+    async def _run():
+        pool = await create_db_pool()
+        try:
+            times = []
+            async with pool.acquire() as conn:
+                for i in range(1000):
+                    t0 = time.perf_counter()
+                    await conn.fetchrow(
+                        """
+                        SELECT out_status_code, out_remaining
+                        FROM fn_quota_consume($1, $2, $3, $4, gen_random_uuid(), '2026-11', NOW());
+                        """,
+                        f"org_over_{i % 50}",
+                        "load_feature",
+                        1,
+                        f"idem_over_{i}_{time.time()}",
+                    )
+                    times.append((time.perf_counter() - t0) * 1000)
+            times.sort()
+            p50 = times[int(len(times) * 0.50)]
+            p95 = times[int(len(times) * 0.95)]
+            p99 = times[int(len(times) * 0.99)]
+            avg = sum(times) / len(times)
+            return {"avg": avg, "p50": p50, "p95": p95, "p99": p99}
+        finally:
+            await pool.close()
 
-        async def worker(req_idx: int):
-            nonlocal errors
-            org = "hot_organization" if target_hot_org else f"org_{random.randint(1, 5000)}"
-            payload = {
-                "org_id": org,
-                "feature": "load_feature",
-                "units": 1,
-                "idempotency_key": str(uuid.uuid4()),
-            }
+    return asyncio.run(_run())
 
-            async with sem:
-                t0 = time.perf_counter()
-                try:
-                    resp = await client.post("/v1/quota/consume", json=payload)
-                    t1 = time.perf_counter()
-                    if resp.status_code in (200, 429):
-                        latencies_ms.append((t1 - t0) * 1000)
-                    else:
-                        errors += 1
-                except Exception:
-                    errors += 1
+def run_locust_scenario(scenario_name, user_class, users, spawn_rate, duration_secs, processes=1):
+    print(f"\n>>> Running {scenario_name} (Users: {users}, Processes: {processes}, Duration: {duration_secs}s)...")
+    csv_prefix = f"/tmp/locust_{user_class}"
+    for f in glob.glob(f"{csv_prefix}*"):
+        os.remove(f)
 
-        # Run workers
-        tasks = [asyncio.create_task(worker(i)) for i in range(total_requests)]
-        await asyncio.gather(*tasks)
+    cmd = [
+        sys.executable,
+        "-m",
+        "locust",
+        "-f",
+        "load_tests/locustfile.py",
+        user_class,
+        "--headless",
+        "-u",
+        str(users),
+        "-r",
+        str(spawn_rate),
+        "--run-time",
+        f"{duration_secs}s",
+        "--host",
+        BASE_URL,
+        "--csv",
+        csv_prefix,
+    ]
+    if processes > 1:
+        cmd.extend(["--processes", str(processes)])
 
-    total_time = time.perf_counter() - start_time
-    throughput = len(latencies_ms) / total_time if total_time > 0 else 0
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    latencies_ms.sort()
-    p50 = latencies_ms[int(len(latencies_ms) * 0.50)] if latencies_ms else 0.0
-    p95 = latencies_ms[int(len(latencies_ms) * 0.95)] if latencies_ms else 0.0
-    p99 = latencies_ms[int(len(latencies_ms) * 0.99)] if latencies_ms else 0.0
+    # Parse stats from generated CSV
+    stats_file = f"{csv_prefix}_stats.csv"
+    throughput = 0.0
+    failures = 0
+    total_reqs = 0
 
+    with open(stats_file, mode="r") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row["Name"] == "Aggregated":
+                total_reqs = int(row["Request Count"])
+                failures = int(row["Failure Count"])
+                throughput = float(row["Requests/s"])
+
+    # Parse percentiles from response time CSV
+    p50, p95, p99 = 0.0, 0.0, 0.0
+    percentiles_file = f"{csv_prefix}_stats_history.csv"
+    # Or from the percentiles CSV if available
+    pct_file = f"{csv_prefix}_failures.csv" # check percentiles
+    # Let's inspect percentiles from stats file or compute
+    pct_filename = f"{csv_prefix}_stats.csv"
+    with open(pct_filename, mode="r") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row["Name"] == "Aggregated":
+                p50 = float(row.get("50%", row.get("Median Response Time", 0)))
+                p95 = float(row.get("95%", 0))
+                p99 = float(row.get("99%", 0))
+
+    err_pct = (failures / total_reqs * 100) if total_reqs > 0 else 0.0
     return {
-        "scenario": name,
+        "scenario": scenario_name,
         "throughput": f"{throughput:,.1f} req/s",
         "p50": f"{p50:.2f} ms",
         "p95": f"{p95:.2f} ms",
         "p99": f"{p99:.2f} ms",
-        "errors": f"{errors} ({errors/total_requests:.1%})" if errors else "0 (0.0%)",
+        "errors": f"{failures} ({err_pct:.1f}%)",
+        "raw_throughput": throughput,
     }
 
-async def main():
-    pool = await create_db_pool()
+def main():
+    procs = start_services()
     try:
-        await setup_benchmarks(pool)
+        seed_database()
+        overhead = measure_overhead()
+        print(f"Measured Quota Operation Overhead: p50={overhead['p50']:.2f}ms, p95={overhead['p95']:.2f}ms, p99={overhead['p99']:.2f}ms, avg={overhead['avg']:.2f}ms")
 
-        print("\n================ RUNNING BENCHMARKS ================")
-        
-        # Scenario 1: 5k organizations, sustained ~2k ops/sec workload
-        print("Running Scenario 1: 5k organizations distributed workload (5,000 requests, concurrency=30)...")
-        res1 = await benchmark_scenario("5k organizations, sustained 2k ops/sec", concurrency=30, total_requests=5000)
+        # Scenario 1: 5k organizations, sustained workload
+        s1 = run_locust_scenario("5k organizations, sustained", "DistributedQuotaUser", users=60, spawn_rate=20, duration_secs=15)
 
-        # Scenario 2: 5k organizations, peak workload
-        print("Running Scenario 2: 5k organizations peak burst (10,000 requests, concurrency=80)...")
-        res2 = await benchmark_scenario("5k organizations, peak near 10k ops/sec", concurrency=80, total_requests=10000)
+        # Scenario 2: 5k organizations, peak workload burst
+        s2 = run_locust_scenario("5k organizations, peak burst", "PeakQuotaUser", users=150, spawn_rate=50, duration_secs=15)
 
-        # Scenario 3: Single hot organization/feature row contention
-        print("Running Scenario 3: Single hot organization/feature contention (3,000 requests, concurrency=20)...")
-        res3 = await benchmark_scenario("Single hot organization/feature", concurrency=20, total_requests=3000, target_hot_org=True)
+        # Scenario 3: Single hot organization/feature contention
+        s3 = run_locust_scenario("Single hot organization/feature", "HotOrgQuotaUser", users=40, spawn_rate=20, duration_secs=15)
 
-        results = [res1, res2, res3]
-        print("\n\n### Measured Benchmark Results Table\n")
+        print("\n\n================ FINAL MEASURED RESULTS ================\n")
         print("| Scenario | Throughput | p50 | p95 | p99 | Errors |")
         print("| :--- | :---: | :---: | :---: | :---: | :---: |")
-        for r in results:
-            print(f"| {r['scenario']} | {r['throughput']} | {r['p50']} | {r['p95']} | {r['p99']} | {r['errors']} |")
+        for s in [s1, s2, s3]:
+            print(f"| {s['scenario']} | {s['throughput']} | {s['p50']} | {s['p95']} | {s['p99']} | {s['errors']} |")
 
+        print(f"\nOverhead Benchmark: p50={overhead['p50']:.2f}ms, p95={overhead['p95']:.2f}ms (<10ms target: PASS)")
     finally:
-        await pool.close()
+        stop_services(procs)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

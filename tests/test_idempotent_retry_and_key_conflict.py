@@ -1,7 +1,12 @@
+# Tests idempotency over HTTP (DESIGN.md 4.3, 6, Requirement 3).
+# Case: test_idempotent_retry_and_conflict_handling
+#   - same key and payload replays the stored result without charging again
+#   - same key with a different payload returns 409
+#   - retrying a rejected request replays the stored 429
 import pytest
 from httpx import AsyncClient, ASGITransport
-from quota.api import app
-from quota.database import init_db
+from quota.main import app
+from quota.core.database import init_db
 
 @pytest.mark.asyncio
 async def test_idempotent_retry_and_conflict_handling(db_pool):

@@ -1,8 +1,15 @@
+# Tests concurrent consumption never over-consumes (NFR 1, 2; DESIGN.md 4.1, 4.2).
+# Cases:
+#   - test_key_concurrency_100_requests_against_500_quota: 100 parallel requests of 10 units
+#     against a 500 quota; exactly 50 succeed, 50 get 429, final usage is exactly 500
+#   - test_mixed_request_sizes_and_concurrent_first_time_creation: mixed 15/5-unit requests
+#     racing on first-time usage-row creation; no 500s, usage never exceeds the limit and
+#     equals the sum of successful units
 import asyncio
 import pytest
 from httpx import AsyncClient, ASGITransport
-from quota.api import app
-from quota.database import init_db
+from quota.main import app
+from quota.core.database import init_db
 
 @pytest.mark.asyncio
 async def test_key_concurrency_100_requests_against_500_quota(db_pool):

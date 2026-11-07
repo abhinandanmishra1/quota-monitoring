@@ -1,8 +1,12 @@
+# Tests state-transition races (DESIGN.md 6: conditional transitions).
+# Case: test_racing_finalize_and_refund_transitions
+#   - finalize and refund fired concurrently on one CHARGED operation: exactly one gets 200,
+#     the other 409, and the operation ends in a single valid state
 import asyncio
 import pytest
 from httpx import AsyncClient, ASGITransport
-from quota.api import app
-from quota.database import init_db
+from quota.main import app
+from quota.core.database import init_db
 
 @pytest.mark.asyncio
 async def test_racing_finalize_and_refund_transitions(db_pool):

@@ -70,7 +70,7 @@ export DB_POOL_MAX=20
 
 ### 3. Run FastAPI Service
 ```bash
-PYTHONPATH=src uvicorn quota.api:app --host 0.0.0.0 --port 8000 --reload
+PYTHONPATH=src uvicorn quota.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ---
@@ -84,13 +84,13 @@ pytest tests/ -v
 ```
 
 ### Key Test Suites:
-- `tests/test_concurrency.py`: 100 concurrent requests of 10 units against a quota of 500 (verifies exactly 50 pass, 50 reject with 429, and final usage is exactly 500).
-- `tests/test_idempotency.py`: Verifies replay protection, same key payload mismatch (409 Conflict), and rejected request replay.
-- `tests/test_refunds_periods.py`: Verifies cross-month billing period refund isolation.
-- `tests/test_state_transitions.py`: Verifies race condition between finalize and refund (only one state transition succeeds).
-- `tests/test_admin_config.py`: Verifies feature defaults, org overrides, and rejecting limit reductions below current usage.
-- `tests/test_fail_closed.py`: Verifies 503 fail-closed behavior when database is unreachable.
-- `tests/test_overhead.py`: Verifies that quota enforcement latency overhead is `< 10ms` (measured ~3.7ms p50).
+- `tests/test_concurrent_consume_never_exceeds_quota.py`: 100 concurrent requests of 10 units against a quota of 500 (verifies exactly 50 pass, 50 reject with 429, and final usage is exactly 500).
+- `tests/test_idempotent_retry_and_key_conflict.py`: Verifies replay protection, same key payload mismatch (409 Conflict), and rejected request replay.
+- `tests/test_refund_credits_original_period.py`: Verifies cross-month billing period refund isolation.
+- `tests/test_finalize_refund_race.py`: Verifies race condition between finalize and refund (only one state transition succeeds).
+- `tests/test_admin_limits_defaults_overrides_and_period_update.py`: Verifies feature defaults, org overrides, and rejecting limit reductions below current usage.
+- `tests/test_database_outage_returns_503.py`: Verifies 503 fail-closed behavior when database is unreachable.
+- `tests/test_operation_overhead_under_10ms.py`: Verifies that quota enforcement latency overhead is `< 10ms` (measured ~3.7ms p50).
 
 ---
 
@@ -253,5 +253,12 @@ curl "http://localhost:8000/v1/quota/usage?org_id=org_enterprise_1&feature=ai_in
 To identify stale `CHARGED` operations that timed out downstream and require investigation:
 
 ```bash
-PYTHONPATH=src .venv/bin/python3 -m quota.reconciliation 300
+PYTHONPATH=src .venv/bin/python3 -m quota.reconciliation.worker report 300
+```
+
+### Retention Cleanup
+Deletes `FINALIZED`, `REFUNDED` and `REJECTED` operations older than the 24-hour idempotency window (never `CHARGED`):
+
+```bash
+PYTHONPATH=src .venv/bin/python3 -m quota.reconciliation.worker purge 24
 ```

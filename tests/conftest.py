@@ -1,7 +1,7 @@
 import pytest_asyncio
 import asyncpg
-from quota.config import settings
-from quota.database import create_db_pool, init_db
+from quota.core.config import settings
+from quota.core.database import create_db_pool, init_db
 
 @pytest_asyncio.fixture(scope="function")
 async def db_pool():

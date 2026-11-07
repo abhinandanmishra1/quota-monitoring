@@ -1,7 +1,12 @@
+# Tests schema setup and billing-period helpers (DESIGN.md 4.4, 5).
+# Cases:
+#   - test_init_db_creates_all_tables: the four tables exist after init_db
+#   - test_period_calculation: UTC calendar-month period and next reset time
+#   - test_period_calculation_year_rollover: December rolls to January of the next year
 import pytest
 import asyncpg
-from quota.database import init_db
-from quota.period import get_current_period, get_next_reset_time
+from quota.core.database import init_db
+from quota.core.period import get_current_period, get_next_reset_time
 from datetime import datetime, timezone
 
 @pytest.mark.asyncio
