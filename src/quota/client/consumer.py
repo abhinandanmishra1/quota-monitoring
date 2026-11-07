@@ -26,7 +26,6 @@ class SampleDownstreamConsumer:
         idempotency_key: str,
         downstream_fn: Callable[[], Coroutine[Any, Any, Any]],
     ) -> dict[str, Any]:
-        # Step 1: Request quota
         consume_resp = await self.client.post(
             "/v1/quota/consume",
             json={
@@ -54,11 +53,10 @@ class SampleDownstreamConsumer:
         consume_data = consume_resp.json()
         op_id = consume_data["operation_id"]
 
-        # Step 2: Execute downstream work
         try:
             result = await downstream_fn()
-            # Step 3: Success -> Finalize
-            fin_resp = await self.client.post(
+            
+            await self.client.post(
                 "/v1/quota/finalize", json={"operation_id": op_id}
             )
             return {
@@ -69,8 +67,6 @@ class SampleDownstreamConsumer:
             }
 
         except asyncio.TimeoutError:
-            # Step 5: Downstream timeout or ambiguous response:
-            # Keep operation CHARGED. Do NOT refund (DESIGN.md Section 4.3 & 6)
             logger.warning(
                 f"Downstream operation {op_id} timed out. Keeping CHARGED for reconciliation."
             )
@@ -81,11 +77,12 @@ class SampleDownstreamConsumer:
             }
 
         except Exception as exc:
-            # Step 4: Confirmed downstream failure -> Refund units
             logger.info(
                 f"Downstream operation {op_id} confirmed failed ({exc}). Refunding units."
             )
-            refund_resp = await self.client.post(
+            # here we are refunding instantly however we can add a queue here
+            # refund can be done with sometime not necessary to be instant
+            await self.client.post(
                 "/v1/quota/refund",
                 json={"operation_id": op_id, "reason": str(exc)},
             )

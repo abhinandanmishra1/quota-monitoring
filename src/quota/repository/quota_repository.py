@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime
 import asyncpg
 from quota.core.period import get_current_period, get_next_reset_time
+from quota.schemas.common import OperationStatus
 from quota.schemas.quota import (
     ConsumeResult,
     FinalizeResult,
@@ -172,18 +173,20 @@ class QuotaRepository:
             row = await conn.fetchrow(
                 """
                 UPDATE quota_operations
-                SET status = 'FINALIZED', updated_at = NOW()
-                WHERE operation_id = $1 AND status = 'CHARGED'
+                SET status = $2, updated_at = NOW()
+                WHERE operation_id = $1 AND status = $3
                 RETURNING status;
                 """,
                 operation_id,
+                OperationStatus.FINALIZED.value,
+                OperationStatus.CHARGED.value,
             )
             if row:
                 return FinalizeResult(
                     success=True,
                     status_code=200,
                     operation_id=str(operation_id),
-                    status="FINALIZED",
+                    status=OperationStatus.FINALIZED.value,
                 )
 
             current = await conn.fetchrow(
@@ -198,12 +201,12 @@ class QuotaRepository:
                     status="NOT_FOUND",
                     detail="Operation not found",
                 )
-            if current["status"] == "FINALIZED":
+            if current["status"] == OperationStatus.FINALIZED:
                 return FinalizeResult(
                     success=True,
                     status_code=200,
                     operation_id=str(operation_id),
-                    status="FINALIZED",
+                    status=OperationStatus.FINALIZED.value,
                 )
             else:
                 return FinalizeResult(
@@ -241,7 +244,7 @@ class QuotaRepository:
                         detail="Operation not found",
                     )
 
-                if op["status"] != "CHARGED":
+                if op["status"] != OperationStatus.CHARGED:
                     return RefundResult(
                         success=False,
                         status_code=409,
@@ -254,10 +257,11 @@ class QuotaRepository:
                 await conn.execute(
                     """
                     UPDATE quota_operations
-                    SET status = 'REFUNDED', updated_at = NOW()
+                    SET status = $2, updated_at = NOW()
                     WHERE operation_id = $1;
                     """,
                     operation_id,
+                    OperationStatus.REFUNDED.value,
                 )
 
                 # 3. Lock and update usage row for the ORIGINAL period
@@ -282,7 +286,7 @@ class QuotaRepository:
                     success=True,
                     status_code=200,
                     operation_id=str(operation_id),
-                    status="REFUNDED",
+                    status=OperationStatus.REFUNDED.value,
                     refunded_units=op["request_units"],
                     remaining=remaining,
                 )

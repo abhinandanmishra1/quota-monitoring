@@ -3,6 +3,7 @@ import logging
 from typing import Any
 import asyncpg
 from quota.core.database import create_db_pool
+from quota.schemas.common import OperationStatus
 
 logger = logging.getLogger(__name__)
 
@@ -22,13 +23,14 @@ async def find_stale_charged_operations(
             """
             SELECT operation_id, org_id, feature, idempotency_key, request_units, period, status, created_at 
             FROM quota_operations 
-            WHERE status = 'CHARGED'
+            WHERE status = $3
               AND created_at <= NOW() - INTERVAL '1 second' * $1
             ORDER BY created_at ASC
             LIMIT $2;
             """,
             max_age_seconds,
             limit,
+            OperationStatus.CHARGED.value,
         )
         return [dict(r) for r in rows]
 
@@ -44,10 +46,15 @@ async def purge_expired_operations(
         result = await conn.execute(
             """
             DELETE FROM quota_operations
-            WHERE status IN ('FINALIZED', 'REFUNDED', 'REJECTED')
+            WHERE status = ANY($2::text[])
               AND updated_at <= NOW() - INTERVAL '1 hour' * $1;
             """,
             retention_hours,
+            [
+                OperationStatus.FINALIZED.value,
+                OperationStatus.REFUNDED.value,
+                OperationStatus.REJECTED.value,
+            ],
         )
     return int(result.split()[-1])
 
