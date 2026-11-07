@@ -247,7 +247,7 @@ Overhead was measured separately for the database function and the HTTP layer:
 
 **Load testing configuration & reproducibility**
 
-Load testing used Locust with `FastHttpUser`, with traffic spread round-robin across 4 independent FastAPI/Uvicorn instances sharing one PostgreSQL database:
+Load testing used Locust with `FastHttpUser`, with each request sent to a randomly chosen one of 4 independent FastAPI/Uvicorn instances sharing one PostgreSQL database:
 
 - **Reproduction command:**
   ```bash
